@@ -9,19 +9,19 @@
     "db:init": "node scripts/init-db.mjs"
   },
   "dependencies": {
+    "@tailwindcss/postcss": "^4",
     "next": "16.2.6",
     "postgres": "^3.4.9",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "rss-parser": "^3.13.0",
+    "tailwindcss": "^4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "tailwindcss": "^4",
     "typescript": "^5"
   }
 }
