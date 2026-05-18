@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SESSION_COOKIE_NAME, verifySession } from "@/app/lib/session";
-import { runIngestAndRank } from "@/app/lib/runs";
-import { latestRun } from "@/app/lib/runs";
+import { latestRun, runIngestAndRank } from "@/app/lib/runs";
 
 /**
  * POST /api/refresh
@@ -10,9 +9,9 @@ import { latestRun } from "@/app/lib/runs";
  * cheaply: the source fetchers' caches (RSS 5min, Reddit 15min) absorb
  * back-to-back clicks. Admins can pass `?force=1` to bypass.
  *
- * Also enforces a 60-second cooldown server-side, mirroring the client-side
- * button cooldown. If the latest run started less than 60s ago AND `force`
- * isn't set, return the existing report rather than re-running.
+ * 60-second cooldown enforced server-side, mirroring the client-side button
+ * cooldown. If the latest run started less than 60s ago AND `force` isn't
+ * set, return the existing report rather than re-running.
  */
 
 const COOLDOWN_MS = 60_000;
@@ -21,8 +20,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  const session = verifySession(req.cookies.get(SESSION_COOKIE_NAME)?.value);
-  if (!session) {
+  if (!verifySession(req.cookies.get(SESSION_COOKIE_NAME)?.value)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -42,11 +40,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const result = await runIngestAndRank(vertical, {
-      triggeredBy: "refresh",
-      userEmail: session.email,
-      force,
-    });
+    const result = await runIngestAndRank(vertical, { triggeredBy: "refresh", force });
     return NextResponse.json({
       ok: true,
       vertical,

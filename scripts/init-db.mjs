@@ -8,12 +8,9 @@
 //      its own transaction.
 //   3. Always re-applies db/seed.sql (relies on the seed's own
 //      `on conflict do nothing` clauses).
-//   4. If INITIAL_ALLOWED_EMAILS is set (comma-separated), upserts each
-//      address into `allowed_emails`. This is the only way to bootstrap the
-//      magic-link allowlist on a fresh deploy.
 //
 // Safe to run every deploy: already-applied migrations are skipped, the seed
-// is idempotent, and the allowlist inserts conflict-no-op.
+// is idempotent.
 
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -97,34 +94,10 @@ async function applySeed() {
   }
 }
 
-async function seedAllowedEmails() {
-  const raw = process.env.INITIAL_ALLOWED_EMAILS;
-  if (!raw) {
-    console.log("init-db: INITIAL_ALLOWED_EMAILS not set, skipping allowlist seed");
-    return;
-  }
-  const emails = raw
-    .split(",")
-    .map((e) => e.trim().toLowerCase())
-    .filter((e) => e.length > 0 && e.includes("@"));
-  if (emails.length === 0) {
-    console.log("init-db: INITIAL_ALLOWED_EMAILS contained no valid addresses");
-    return;
-  }
-  for (const email of emails) {
-    await sql`
-      insert into allowed_emails (email) values (${email})
-      on conflict (email) do nothing
-    `;
-  }
-  console.log(`init-db: ensured ${emails.length} allowlist entry/entries`);
-}
-
 try {
   await ensureMigrationsTable();
   await applyMigrations();
   await applySeed();
-  await seedAllowedEmails();
   await sql.end();
   console.log("init-db: ok");
 } catch (err) {

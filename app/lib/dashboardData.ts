@@ -57,7 +57,6 @@ type RankingRow = {
 
 export async function loadDashboard(
   vertical: string,
-  userEmail: string,
   opts: { limit?: number } = {},
 ): Promise<Dashboard> {
   const limit = opts.limit ?? 15;
@@ -94,7 +93,6 @@ export async function loadDashboard(
              select action
                from feedback f
               where f.story_id = r.story_id
-                and f.user_email = ${userEmail.toLowerCase()}
               order by f.created_at desc
               limit 1
            ) as user_action

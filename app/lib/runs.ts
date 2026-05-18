@@ -18,7 +18,7 @@ export type RunResult = {
 
 export async function runIngestAndRank(
   vertical: string,
-  opts: { triggeredBy: "cron" | "refresh"; userEmail?: string; force?: boolean },
+  opts: { triggeredBy: "cron" | "refresh"; force?: boolean },
 ): Promise<RunResult> {
   const startedAt = new Date();
   const ingest = await ingestVertical(vertical, { force: opts.force, now: startedAt });
@@ -39,7 +39,7 @@ export async function runIngestAndRank(
       ${sql.json(ingestJson)},
       ${sql.json(rankingJson)},
       ${opts.triggeredBy},
-      ${opts.userEmail ?? null},
+      ${null},
       ${opts.force === true}
     )
   `;

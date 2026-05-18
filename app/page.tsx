@@ -1,5 +1,3 @@
-import { cookies } from "next/headers";
-import { SESSION_COOKIE_NAME, verifySession } from "@/app/lib/session";
 import { loadDashboard } from "@/app/lib/dashboardData";
 import { StoryCard } from "@/app/components/StoryCard";
 import { RefreshButton } from "@/app/components/RefreshButton";
@@ -7,11 +5,7 @@ import { RefreshButton } from "@/app/components/RefreshButton";
 export const dynamic = "force-dynamic";
 
 export default async function Dashboard() {
-  const cookieStore = await cookies();
-  const session = verifySession(cookieStore.get(SESSION_COOKIE_NAME)?.value);
-  const email = session?.email ?? "unknown";
-
-  const dashboard = await loadDashboard("gaming", email);
+  const dashboard = await loadDashboard("gaming");
 
   return (
     <main className="min-h-screen bg-neutral-50">
@@ -31,7 +25,6 @@ export default async function Dashboard() {
           </div>
           <div className="flex items-center gap-3">
             <RefreshButton />
-            <span className="text-xs text-neutral-500">{email}</span>
             <form action="/api/auth/logout" method="post">
               <button
                 type="submit"

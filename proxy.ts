@@ -14,8 +14,7 @@ import { SESSION_COOKIE_NAME, verifySession } from "@/app/lib/session";
 
 const PUBLIC_PATHS = new Set<string>([
   "/login",
-  "/api/auth/magic-link",
-  "/api/auth/verify",
+  "/api/auth/login",
   // Cron endpoint does its own bearer-token auth; don't redirect to /login.
   "/api/cron/rank",
 ]);
