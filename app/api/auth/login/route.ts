@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { checkPassword, issueSessionCookie } from "@/app/lib/auth";
+import { publicOrigin } from "@/app/lib/origin";
 
 /**
  * POST /api/auth/login
@@ -26,6 +27,7 @@ function safeNext(raw: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  const origin = publicOrigin(req);
   const form = await req.formData();
   const parsed = BodySchema.safeParse({
     password: form.get("password"),
@@ -33,16 +35,16 @@ export async function POST(req: NextRequest) {
   });
 
   if (!parsed.success) {
-    return NextResponse.redirect(new URL("/login?error=bad-password", req.url), { status: 303 });
+    return NextResponse.redirect(new URL("/login?error=bad-password", origin), { status: 303 });
   }
 
   const { password, next } = parsed.data;
   if (!checkPassword(password)) {
-    return NextResponse.redirect(new URL("/login?error=bad-password", req.url), { status: 303 });
+    return NextResponse.redirect(new URL("/login?error=bad-password", origin), { status: 303 });
   }
 
   const cookie = issueSessionCookie();
-  const res = NextResponse.redirect(new URL(safeNext(next), req.url), { status: 303 });
+  const res = NextResponse.redirect(new URL(safeNext(next), origin), { status: 303 });
   res.cookies.set({
     name: cookie.name,
     value: cookie.value,

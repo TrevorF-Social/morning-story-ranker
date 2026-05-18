@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { clearSessionCookie } from "@/app/lib/auth";
+import { publicOrigin } from "@/app/lib/origin";
 
 /**
  * POST /api/auth/logout — clear the session cookie, redirect to /login.
@@ -9,7 +10,7 @@ import { clearSessionCookie } from "@/app/lib/auth";
  */
 export async function POST(req: NextRequest) {
   const cookie = clearSessionCookie();
-  const res = NextResponse.redirect(new URL("/login", req.url), { status: 303 });
+  const res = NextResponse.redirect(new URL("/login", publicOrigin(req)), { status: 303 });
   res.cookies.set({
     name: cookie.name,
     value: cookie.value,
