@@ -26,10 +26,8 @@ on conflict (kind, domain, sub_name) do nothing;
 -- they don't crowd out outlet articles in the news ranking.
 insert into sources (vertical, kind, name, sub_name, authority_weight, video_only) values
   ('gaming', 'reddit', 'r/gamingclips',            'gamingclips',            0.60, true),
-  ('gaming', 'reddit', 'r/leagueoflegends',        'leagueoflegends',        0.60, true),
   ('gaming', 'reddit', 'r/VALORANT',               'VALORANT',               0.60, true),
   ('gaming', 'reddit', 'r/Overwatch',              'Overwatch',              0.60, true),
-  ('gaming', 'reddit', 'r/GlobalOffensive',        'GlobalOffensive',        0.60, true),
   ('gaming', 'reddit', 'r/apexlegends',            'apexlegends',            0.60, true),
   ('gaming', 'reddit', 'r/FortNiteBR',             'FortNiteBR',             0.60, true),
   ('gaming', 'reddit', 'r/wow',                    'wow',                    0.60, true),
