@@ -7,15 +7,15 @@ import { fetchRedditPosts, type RedditPost, type RedditSource } from "@/app/lib/
  * Ingest orchestrator. Pulls every active source for a vertical, normalizes,
  * dedupes via canonical URL, and writes to `stories` + `story_signals`.
  *
- * Reddit's two-role behavior (PRD Data Inputs) lives here:
- *  - Reddit post whose outbound canonical host matches a seeded RSS outlet
- *    → ensure a story row exists for that outlet (insert from Reddit data if
- *    we don't have RSS for it yet), then attach the Reddit thread as a
- *    signal.
- *  - Reddit self-post / outbound to non-tracked host → standalone story
- *    with source = the reddit sub (authority 0.6 via the sub's seed row).
- *    Engagement still lands in story_signals so ranking can read it
- *    uniformly.
+ * Each Reddit post is classified into one of three roles (in priority order):
+ *  1. Video — is_video, video host outbound, or rich:video post_hint
+ *     → standalone story with kind='video', source = the reddit sub,
+ *       canonical = video URL. Excluded from the main news ranking.
+ *  2. Outbound to tracked outlet (non-video)
+ *     → ensure a kind='news' story exists for that outlet (insert from
+ *       Reddit data if RSS hasn't surfaced it yet); attach signal.
+ *  3. Self-post / non-video / non-outlet outbound
+ *     → standalone kind='news' story with the reddit sub as source.
  *
  * Returns per-source success/failure so the cron can surface a "Reddit
  * unavailable" banner when every Reddit fetch fails.
@@ -27,6 +27,7 @@ export type IngestReport = {
   rss: Array<{ sourceId: number; name: string; ok: boolean; candidates: number; error: string | null }>;
   reddit: Array<{ sourceId: number; subName: string; ok: boolean; posts: number; error: string | null }>;
   storiesUpserted: number;
+  videoStories: number;
   signalsAttached: number;
   redditAllFailed: boolean;
 };
@@ -38,7 +39,20 @@ type SourceRow = {
   feed_url: string | null;
   domain: string | null;
   sub_name: string | null;
-  authority_weight: string; // numeric returns as string from postgres.js
+  authority_weight: string;
+};
+
+type StoryKind = "news" | "video";
+
+type UpsertArgs = {
+  kind: StoryKind;
+  sourceId: number;
+  title: string;
+  url: string;
+  canonicalUrl: string;
+  publishedAt: Date;
+  heroImageUrl: string | null;
+  summary: string | null;
 };
 
 export async function ingestVertical(
@@ -63,9 +77,6 @@ export async function ingestVertical(
     }
   }
 
-  // outletHostToSourceId: canonical host → RSS source id. Used to route
-  // Reddit posts that link to a tracked outlet onto that outlet's story
-  // (rather than creating a Reddit-only duplicate).
   const outletHostToSourceId = new Map<string, number>();
   for (const r of rssSources) {
     if (r.domain) outletHostToSourceId.set(r.domain.toLowerCase(), r.id);
@@ -101,16 +112,26 @@ export async function ingestVertical(
       error: redditResults[i].error,
     })),
     storiesUpserted: 0,
+    videoStories: 0,
     signalsAttached: 0,
     redditAllFailed:
       redditSources.length > 0 && redditResults.every((r) => r.error != null),
   };
 
-  // --- 1. Upsert RSS stories first so Reddit can match against them ---
+  // --- 1. Upsert RSS stories first so Reddit non-video posts can match against them ---
   const rssCandidates = rssResults.flatMap((r) => r.candidates);
   const storyIdByCanonical = new Map<string, number>();
   for (const c of rssCandidates) {
-    const id = await upsertStory(vertical, c);
+    const id = await upsertStory({
+      kind: "news",
+      sourceId: c.sourceId,
+      title: c.title,
+      url: c.url,
+      canonicalUrl: c.canonicalUrl,
+      publishedAt: c.publishedAt,
+      heroImageUrl: c.heroImageUrl,
+      summary: c.summary,
+    }, vertical);
     storyIdByCanonical.set(c.canonicalUrl, id);
   }
   report.storiesUpserted = storyIdByCanonical.size;
@@ -118,7 +139,33 @@ export async function ingestVertical(
   // --- 2. Walk Reddit posts ---
   const redditPosts = redditResults.flatMap((r) => r.posts);
   for (const p of redditPosts) {
-    // Case A: outbound matches a tracked outlet
+    // Priority 1: video clip (overrides outlet match — videos belong in the
+    // clips section regardless of where they were linked from)
+    if (p.isVideo) {
+      const canonical = p.videoUrl ?? canonicalizeUrl(p.permalink);
+      if (!canonical) continue;
+      let storyId = storyIdByCanonical.get(canonical);
+      if (storyId == null) {
+        storyId = await upsertStory({
+          kind: "video",
+          sourceId: p.sourceId,
+          title: p.title,
+          url: p.videoUrl ?? p.permalink,
+          canonicalUrl: canonical,
+          publishedAt: p.createdAt,
+          heroImageUrl: p.thumbnailUrl,
+          summary: null,
+        }, vertical);
+        storyIdByCanonical.set(canonical, storyId);
+        report.storiesUpserted++;
+        report.videoStories++;
+      }
+      await upsertSignal(storyId, p);
+      report.signalsAttached++;
+      continue;
+    }
+
+    // Priority 2: outbound matches a tracked outlet
     if (p.outboundCanonical) {
       let outletHost: string | null = null;
       try {
@@ -129,11 +176,10 @@ export async function ingestVertical(
       const outletSourceId = outletHost ? outletHostToSourceId.get(outletHost) ?? null : null;
 
       if (outletSourceId != null) {
-        // Ensure a story row exists. If RSS already provided it, reuse the id;
-        // otherwise insert a placeholder using Reddit's title + creation time.
         let storyId = storyIdByCanonical.get(p.outboundCanonical);
         if (storyId == null) {
-          storyId = await upsertStory(vertical, {
+          storyId = await upsertStory({
+            kind: "news",
             sourceId: outletSourceId,
             title: p.title,
             url: p.outboundUrl ?? p.outboundCanonical,
@@ -141,7 +187,7 @@ export async function ingestVertical(
             publishedAt: p.createdAt,
             heroImageUrl: null,
             summary: null,
-          });
+          }, vertical);
           storyIdByCanonical.set(p.outboundCanonical, storyId);
           report.storiesUpserted++;
         }
@@ -151,12 +197,13 @@ export async function ingestVertical(
       }
     }
 
-    // Case B: standalone story (self-post or non-tracked host)
+    // Priority 3: standalone news story (self-post or non-tracked, non-video outbound)
     const canonical = p.outboundCanonical ?? canonicalizeUrl(p.permalink);
     if (!canonical) continue;
     let storyId = storyIdByCanonical.get(canonical);
     if (storyId == null) {
-      storyId = await upsertStory(vertical, {
+      storyId = await upsertStory({
+        kind: "news",
         sourceId: p.sourceId,
         title: p.title,
         url: p.outboundUrl ?? p.permalink,
@@ -164,7 +211,7 @@ export async function ingestVertical(
         publishedAt: p.createdAt,
         heroImageUrl: null,
         summary: null,
-      });
+      }, vertical);
       storyIdByCanonical.set(canonical, storyId);
       report.storiesUpserted++;
     }
@@ -175,12 +222,15 @@ export async function ingestVertical(
   return report;
 }
 
-async function upsertStory(vertical: string, c: RssCandidate): Promise<number> {
-  // ON CONFLICT DO UPDATE with a no-op assignment so we always get RETURNING.
+async function upsertStory(c: UpsertArgs, vertical: string): Promise<number> {
+  // On conflict we keep the existing row's kind, title, etc. — the first
+  // ingest of a given canonical URL wins, subsequent ingests just need the id
+  // back so they can attach signals.
   const rows = await sql<{ id: number }[]>`
-    insert into stories (vertical, canonical_url, source_id, title, url, hero_image_url, summary, published_at)
+    insert into stories (vertical, kind, canonical_url, source_id, title, url, hero_image_url, summary, published_at)
     values (
       ${vertical},
+      ${c.kind},
       ${c.canonicalUrl},
       ${c.sourceId},
       ${c.title},
@@ -207,3 +257,6 @@ async function upsertSignal(storyId: number, p: RedditPost): Promise<void> {
            fetched_at = excluded.fetched_at
   `;
 }
+
+// RssCandidate type re-exported for callers that want to test upsert directly
+export type { RssCandidate };

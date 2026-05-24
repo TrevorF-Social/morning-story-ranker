@@ -29,12 +29,15 @@ export type RankReport = {
   snapshotDate: string;     // YYYY-MM-DD
   candidatesConsidered: number;
   ranksWritten: number;
+  newsRanksWritten: number;
+  videoRanksWritten: number;
   suppressedByFeedback: number;
   suppressedByTwoDay: number;
 };
 
 type StoryRow = {
   story_id: number;
+  kind: "news" | "video";
   title: string;
   url: string;
   canonical_url: string;
@@ -107,7 +110,7 @@ export async function rankVertical(
 
   // --- 2. Load candidate stories (last 24h, this vertical) ---
   const stories = await sql<StoryRow[]>`
-    select s.id as story_id,
+    select s.id as story_id, s.kind,
            s.title, s.url, s.canonical_url, s.hero_image_url, s.summary, s.published_at,
            src.id as source_id,
            src.name as source_name,
@@ -127,6 +130,8 @@ export async function rankVertical(
       snapshotDate,
       candidatesConsidered: 0,
       ranksWritten: 0,
+      newsRanksWritten: 0,
+      videoRanksWritten: 0,
       suppressedByFeedback: 0,
       suppressedByTwoDay: 0,
     };
@@ -187,6 +192,7 @@ export async function rankVertical(
   // --- 5. Score the eligible stories ---
   type Scored = {
     storyId: number;
+    kind: "news" | "video";
     score: number;
     breakdown: ScoreBreakdown;
     seenBefore: boolean;
@@ -229,6 +235,7 @@ export async function rankVertical(
 
     scored.push({
       storyId: s.story_id,
+      kind: s.kind,
       score: total,
       seenBefore: seenBeforeSet.has(s.story_id),
       breakdown: {
@@ -249,7 +256,16 @@ export async function rankVertical(
     });
   }
 
+  // Sort + assign rank PER KIND so each section has its own 1..N. A 'news'
+  // story and a 'video' story can both have rank=1 in the rankings table;
+  // uniqueness is still (snapshot_date, vertical, story_id).
   scored.sort((a, b) => b.score - a.score);
+  const ranksByKind = new Map<"news" | "video", number>();
+  const ranked = scored.map((s) => {
+    const next = (ranksByKind.get(s.kind) ?? 0) + 1;
+    ranksByKind.set(s.kind, next);
+    return { ...s, rank: next };
+  });
 
   // --- 6. Wipe + rewrite today's snapshot in a single transaction ---
   // Refresh updates in place; the cleanest way to handle re-runs is to delete
@@ -261,8 +277,7 @@ export async function rankVertical(
        where snapshot_date = ${snapshotDate}::date
          and vertical = ${vertical}
     `;
-    for (let i = 0; i < scored.length; i++) {
-      const s = scored[i];
+    for (const s of ranked) {
       await tx`
         insert into rankings (snapshot_date, vertical, story_id, score, score_breakdown, rank, seen_before, updated_at)
         values (
@@ -271,7 +286,7 @@ export async function rankVertical(
           ${s.storyId},
           ${s.score},
           ${tx.json(s.breakdown)},
-          ${i + 1},
+          ${s.rank},
           ${s.seenBefore},
           now()
         )
@@ -283,7 +298,9 @@ export async function rankVertical(
     vertical,
     snapshotDate,
     candidatesConsidered: stories.length,
-    ranksWritten: scored.length,
+    ranksWritten: ranked.length,
+    newsRanksWritten: ranksByKind.get("news") ?? 0,
+    videoRanksWritten: ranksByKind.get("video") ?? 0,
     suppressedByFeedback: suppressedByFeedback.size,
     suppressedByTwoDay: suppressedByTwoDay.size,
   };

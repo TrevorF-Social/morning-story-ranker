@@ -57,15 +57,18 @@ type RankingRow = {
 
 export async function loadDashboard(
   vertical: string,
-  opts: { limit?: number } = {},
+  opts: { limit?: number; kind?: "news" | "video" } = {},
 ): Promise<Dashboard> {
   const limit = opts.limit ?? 15;
+  const kind = opts.kind ?? "news";
 
-  // Pull the most-recent snapshot date for this vertical. If none, return empty.
+  // Pull the most-recent snapshot date for this vertical+kind. If none, return empty.
   const dateRows = await sql<{ snapshot_date: string }[]>`
-    select max(snapshot_date)::text as snapshot_date
-      from rankings
-     where vertical = ${vertical}
+    select max(r.snapshot_date)::text as snapshot_date
+      from rankings r
+      join stories s on s.id = r.story_id
+     where r.vertical = ${vertical}
+       and s.kind = ${kind}
   `;
   const snapshotDate = dateRows[0]?.snapshot_date ?? null;
   const run = await latestRun(vertical);
@@ -101,6 +104,7 @@ export async function loadDashboard(
       join sources src on src.id = s.source_id
      where r.snapshot_date = ${snapshotDate}::date
        and r.vertical = ${vertical}
+       and s.kind = ${kind}
      order by r.rank asc
      limit ${limit}
   `;

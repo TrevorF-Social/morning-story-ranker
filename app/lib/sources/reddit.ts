@@ -6,33 +6,38 @@ import { canonicalizeUrl } from "@/app/lib/canonical";
  * Endpoint: /r/<sub>/top.json?t=day&limit=50 — committed in PRD as the
  * right pull for a once-a-morning cron over a 24h window.
  *
- * Each post is classified into one of two roles by the caller (in
- * ingest.ts):
- *   1. Outbound link to an outlet we already track → engagement signal
- *      attached to the existing story.
- *   2. Self-post, or outbound to a non-outlet (twitter, youtube, etc.) →
- *      standalone story with the reddit sub as its source.
+ * Each post is classified into one of three roles by the caller (ingest.ts):
+ *   1. Video post (is_video, or links to a known video host) → goes to the
+ *      video-clips section of the dashboard (kind='video' on the story).
+ *   2. Outbound link to a tracked outlet → engagement signal attached to the
+ *      existing outlet story.
+ *   3. Self-post / outbound to a non-outlet, non-video host → standalone
+ *      news story with the reddit sub as source.
  *
  * Filters applied here:
  *  - removed_by_category != null (mod/author removed by fetch time)
  *  - over_18 (NSFW)
  *  - stickied (announcements, megathreads — not news)
  *  - created_utc older than 24h
- *
- * Returns posts oldest-first stripped, ready for the ingest pass.
  */
 
 export type RedditPost = {
-  sourceId: number;          // sources.id for the sub
+  sourceId: number;
   subName: string;
   title: string;
-  permalink: string;         // full reddit URL
-  outboundUrl: string | null;        // null for self-posts and image hosts on i.redd.it
-  outboundCanonical: string | null;  // canonicalized form for matching
+  permalink: string;
+  outboundUrl: string | null;
+  outboundCanonical: string | null;
   upvotes: number;
   comments: number;
   createdAt: Date;
   isSelf: boolean;
+
+  // Video classification (populated when the post is detected as a clip)
+  isVideo: boolean;
+  videoUrl: string | null;        // canonical URL for the video (youtube watch URL, v.redd.it URL, etc.)
+  videoHost: string | null;       // "youtube" | "twitch" | "streamable" | "v.redd.it" | "other"
+  thumbnailUrl: string | null;
 };
 
 type RawListing = {
@@ -50,19 +55,50 @@ type RawPost = {
   url?: string;
   ups?: number;
   num_comments?: number;
-  created_utc?: number;       // seconds since epoch
+  created_utc?: number;
   is_self?: boolean;
+  is_video?: boolean;
   over_18?: boolean;
   stickied?: boolean;
   removed_by_category?: string | null;
   selftext?: string;
   domain?: string;
+  post_hint?: string;
+  thumbnail?: string;
+  preview?: {
+    images?: Array<{
+      source?: { url?: string };
+    }>;
+  };
+  media?: {
+    reddit_video?: { fallback_url?: string };
+    oembed?: { thumbnail_url?: string; type?: string };
+    type?: string;
+  };
+  secure_media?: {
+    reddit_video?: { fallback_url?: string };
+    oembed?: { thumbnail_url?: string; type?: string };
+  };
 };
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 const USER_AGENT =
   "MorningStoryRanker/0.1 (+internal newsroom tool; contact: admin@morningstoryranker.local)";
+
+// Hosts whose links we treat as video clips. Lower-cased, host-only.
+const VIDEO_HOSTS = new Map<string, string>([
+  ["youtube.com", "youtube"],
+  ["m.youtube.com", "youtube"],
+  ["youtu.be", "youtube"],
+  ["clips.twitch.tv", "twitch"],
+  ["twitch.tv", "twitch"], // catches both /videos/ and /clips/
+  ["www.twitch.tv", "twitch"],
+  ["streamable.com", "streamable"],
+  ["v.redd.it", "v.redd.it"],
+  ["medal.tv", "medal"],
+  ["kick.com", "kick"],
+]);
 
 type CacheEntry = { fetchedAt: number; posts: RawPost[] };
 
@@ -82,7 +118,6 @@ async function fetchSubRaw(subName: string, opts: { force?: boolean } = {}): Pro
   const url = `https://www.reddit.com/r/${encodeURIComponent(subName)}/top.json?t=day&limit=50`;
   const res = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-    // 15s budget; Reddit usually responds in under 1s
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) {
@@ -97,12 +132,6 @@ async function fetchSubRaw(subName: string, opts: { force?: boolean } = {}): Pro
   return posts;
 }
 
-/**
- * Reddit hosts non-outbound content at i.redd.it / v.redd.it / reddit.com.
- * For these we treat the post as a self-post (no outbound URL match
- * possible). Outlets we DO track will have their canonical hosts seeded in
- * `sources` and match via canonicalHost in ingest.
- */
 function isInternalRedditHost(host: string): boolean {
   return (
     host === "reddit.com" ||
@@ -111,6 +140,81 @@ function isInternalRedditHost(host: string): boolean {
     host === "v.redd.it" ||
     host.endsWith(".redd.it")
   );
+}
+
+/**
+ * Decide whether a Reddit post is a video clip and pull out a stable URL +
+ * thumbnail. Priority of signals:
+ *
+ *   1. is_video flag → v.redd.it native upload. Use media.reddit_video.fallback_url.
+ *   2. post_hint = 'hosted:video' or 'rich:video' → confirms video kind.
+ *   3. domain ∈ VIDEO_HOSTS → external video host. Use the post URL.
+ *
+ * If nothing matches, returns isVideo=false.
+ */
+function classifyVideo(
+  p: RawPost,
+  outboundCanonical: string | null,
+): { isVideo: boolean; videoUrl: string | null; videoHost: string | null; thumbnailUrl: string | null } {
+  const previewThumb = pickPreviewThumb(p);
+
+  // 1. Reddit-hosted native video
+  if (p.is_video || p.post_hint === "hosted:video") {
+    const fallback =
+      p.media?.reddit_video?.fallback_url ?? p.secure_media?.reddit_video?.fallback_url ?? null;
+    return {
+      isVideo: true,
+      videoUrl: fallback ?? `https://www.reddit.com${p.permalink ?? ""}`,
+      videoHost: "v.redd.it",
+      thumbnailUrl: previewThumb,
+    };
+  }
+
+  // 2/3. External video host
+  if (outboundCanonical) {
+    let host: string | null = null;
+    try {
+      host = new URL(outboundCanonical).hostname;
+    } catch {
+      host = null;
+    }
+    if (host && VIDEO_HOSTS.has(host)) {
+      const oembedThumb =
+        p.media?.oembed?.thumbnail_url ?? p.secure_media?.oembed?.thumbnail_url ?? null;
+      return {
+        isVideo: true,
+        videoUrl: outboundCanonical,
+        videoHost: VIDEO_HOSTS.get(host) ?? "other",
+        thumbnailUrl: oembedThumb ?? previewThumb,
+      };
+    }
+  }
+
+  // 2b. post_hint says rich:video but we couldn't find a host — still flag it
+  if (p.post_hint === "rich:video" && outboundCanonical) {
+    const oembedThumb =
+      p.media?.oembed?.thumbnail_url ?? p.secure_media?.oembed?.thumbnail_url ?? null;
+    return {
+      isVideo: true,
+      videoUrl: outboundCanonical,
+      videoHost: "other",
+      thumbnailUrl: oembedThumb ?? previewThumb,
+    };
+  }
+
+  return { isVideo: false, videoUrl: null, videoHost: null, thumbnailUrl: null };
+}
+
+function pickPreviewThumb(p: RawPost): string | null {
+  // preview.images[0].source.url is HTML-entity-encoded — decode &amp; → &
+  const raw = p.preview?.images?.[0]?.source?.url;
+  if (!raw) {
+    // thumbnail fields can be "self"/"default"/"nsfw" — only accept URLs
+    const t = p.thumbnail;
+    if (t && /^https?:/i.test(t)) return t;
+    return null;
+  }
+  return raw.replace(/&amp;/g, "&");
 }
 
 export type RedditSource = { id: number; subName: string };
@@ -138,6 +242,7 @@ export async function fetchRedditPosts(
     const createdMs = (p.created_utc ?? 0) * 1000;
     if (!createdMs || createdMs < cutoff) continue;
 
+    // Outbound URL extraction (same logic as before)
     const rawOutbound = !p.is_self ? p.url?.trim() ?? null : null;
     let outboundUrl: string | null = null;
     let outboundCanonical: string | null = null;
@@ -151,10 +256,12 @@ export async function fetchRedditPosts(
             outboundCanonical = canonical;
           }
         } catch {
-          // ignore — fall through as no outbound
+          // ignore
         }
       }
     }
+
+    const video = classifyVideo(p, outboundCanonical);
 
     out.push({
       sourceId: source.id,
@@ -167,6 +274,10 @@ export async function fetchRedditPosts(
       comments: p.num_comments ?? 0,
       createdAt: new Date(createdMs),
       isSelf: p.is_self === true || outboundUrl === null,
+      isVideo: video.isVideo,
+      videoUrl: video.videoUrl,
+      videoHost: video.videoHost,
+      thumbnailUrl: video.thumbnailUrl,
     });
   }
 

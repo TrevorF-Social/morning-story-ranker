@@ -17,5 +17,9 @@ insert into sources (vertical, kind, name, sub_name, authority_weight) values
   ('gaming', 'reddit', 'r/PS5',                    'PS5',                    0.60),
   ('gaming', 'reddit', 'r/XboxSeriesX',            'XboxSeriesX',            0.60),
   ('gaming', 'reddit', 'r/NintendoSwitch',         'NintendoSwitch',         0.60),
-  ('gaming', 'reddit', 'r/GamingLeaksAndRumours',  'GamingLeaksAndRumours',  0.60)
+  ('gaming', 'reddit', 'r/GamingLeaksAndRumours',  'GamingLeaksAndRumours',  0.60),
+  -- Clip-focused subs. Posts here are almost always videos; ingest classifies
+  -- each post and routes videos to stories.kind='video'.
+  ('gaming', 'reddit', 'r/gamingclips',            'gamingclips',            0.60),
+  ('gaming', 'reddit', 'r/LivestreamFail',         'LivestreamFail',         0.60)
 on conflict (kind, domain, sub_name) do nothing;
