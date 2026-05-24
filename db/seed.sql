@@ -10,31 +10,34 @@ insert into sources (vertical, kind, name, feed_url, domain, authority_weight) v
   ('gaming', 'rss', 'PC Gamer',  'https://www.pcgamer.com/rss/',                  'pcgamer.com',   0.90)
 on conflict (kind, domain, sub_name) do nothing;
 
-insert into sources (vertical, kind, name, sub_name, authority_weight) values
-  -- News + general gaming subs
-  ('gaming', 'reddit', 'r/Games',                  'Games',                  0.60),
-  ('gaming', 'reddit', 'r/gaming',                 'gaming',                 0.60),
-  ('gaming', 'reddit', 'r/pcgaming',               'pcgaming',               0.60),
-  ('gaming', 'reddit', 'r/PS5',                    'PS5',                    0.60),
-  ('gaming', 'reddit', 'r/XboxSeriesX',            'XboxSeriesX',            0.60),
-  ('gaming', 'reddit', 'r/NintendoSwitch',         'NintendoSwitch',         0.60),
-  ('gaming', 'reddit', 'r/GamingLeaksAndRumours',  'GamingLeaksAndRumours',  0.60),
-  -- Clip-focused subs. Posts here are almost always videos; ingest classifies
-  -- each post and routes videos to stories.kind='video'.
-  ('gaming', 'reddit', 'r/gamingclips',            'gamingclips',            0.60),
-  -- Game-specific subs (high video activity for the video section)
-  ('gaming', 'reddit', 'r/leagueoflegends',        'leagueoflegends',        0.60),
-  ('gaming', 'reddit', 'r/VALORANT',               'VALORANT',               0.60),
-  ('gaming', 'reddit', 'r/Overwatch',              'Overwatch',              0.60),
-  ('gaming', 'reddit', 'r/GlobalOffensive',        'GlobalOffensive',        0.60),
-  ('gaming', 'reddit', 'r/apexlegends',            'apexlegends',            0.60),
-  ('gaming', 'reddit', 'r/FortNiteBR',             'FortNiteBR',             0.60),
-  ('gaming', 'reddit', 'r/wow',                    'wow',                    0.60),
-  ('gaming', 'reddit', 'r/Eldenring',              'Eldenring',              0.60),
-  ('gaming', 'reddit', 'r/Helldivers',             'Helldivers',             0.60),
-  ('gaming', 'reddit', 'r/baldursgate3',           'baldursgate3',           0.60),
-  ('gaming', 'reddit', 'r/EscapefromTarkov',       'EscapefromTarkov',       0.60),
-  ('gaming', 'reddit', 'r/destiny2',               'destiny2',               0.60),
-  ('gaming', 'reddit', 'r/subnautica',             'subnautica',             0.60),
-  ('gaming', 'reddit', 'r/CrimsonDesert',          'CrimsonDesert',          0.60)
+-- News-leaning subs contribute to both news and video sections.
+insert into sources (vertical, kind, name, sub_name, authority_weight, video_only) values
+  ('gaming', 'reddit', 'r/Games',                  'Games',                  0.60, false),
+  ('gaming', 'reddit', 'r/gaming',                 'gaming',                 0.60, false),
+  ('gaming', 'reddit', 'r/pcgaming',               'pcgaming',               0.60, false),
+  ('gaming', 'reddit', 'r/PS5',                    'PS5',                    0.60, false),
+  ('gaming', 'reddit', 'r/XboxSeriesX',            'XboxSeriesX',            0.60, false),
+  ('gaming', 'reddit', 'r/NintendoSwitch',         'NintendoSwitch',         0.60, false),
+  ('gaming', 'reddit', 'r/GamingLeaksAndRumours',  'GamingLeaksAndRumours',  0.60, false)
+on conflict (kind, domain, sub_name) do nothing;
+
+-- video_only=true: clip aggregators + game-specific subs. Their non-video
+-- posts (screenshots, discussion threads, memes) are dropped at ingest so
+-- they don't crowd out outlet articles in the news ranking.
+insert into sources (vertical, kind, name, sub_name, authority_weight, video_only) values
+  ('gaming', 'reddit', 'r/gamingclips',            'gamingclips',            0.60, true),
+  ('gaming', 'reddit', 'r/leagueoflegends',        'leagueoflegends',        0.60, true),
+  ('gaming', 'reddit', 'r/VALORANT',               'VALORANT',               0.60, true),
+  ('gaming', 'reddit', 'r/Overwatch',              'Overwatch',              0.60, true),
+  ('gaming', 'reddit', 'r/GlobalOffensive',        'GlobalOffensive',        0.60, true),
+  ('gaming', 'reddit', 'r/apexlegends',            'apexlegends',            0.60, true),
+  ('gaming', 'reddit', 'r/FortNiteBR',             'FortNiteBR',             0.60, true),
+  ('gaming', 'reddit', 'r/wow',                    'wow',                    0.60, true),
+  ('gaming', 'reddit', 'r/Eldenring',              'Eldenring',              0.60, true),
+  ('gaming', 'reddit', 'r/Helldivers',             'Helldivers',             0.60, true),
+  ('gaming', 'reddit', 'r/baldursgate3',           'baldursgate3',           0.60, true),
+  ('gaming', 'reddit', 'r/EscapefromTarkov',       'EscapefromTarkov',       0.60, true),
+  ('gaming', 'reddit', 'r/destiny2',               'destiny2',               0.60, true),
+  ('gaming', 'reddit', 'r/subnautica',             'subnautica',             0.60, true),
+  ('gaming', 'reddit', 'r/CrimsonDesert',          'CrimsonDesert',          0.60, true)
 on conflict (kind, domain, sub_name) do nothing;

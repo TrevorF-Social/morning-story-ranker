@@ -40,6 +40,7 @@ type SourceRow = {
   domain: string | null;
   sub_name: string | null;
   authority_weight: string;
+  video_only: boolean;
 };
 
 type StoryKind = "news" | "video";
@@ -62,14 +63,19 @@ export async function ingestVertical(
   const fetchedAt = opts.now ?? new Date();
 
   const sources = await sql<SourceRow[]>`
-    select id, kind, name, feed_url, domain, sub_name, authority_weight
+    select id, kind, name, feed_url, domain, sub_name, authority_weight, video_only
       from sources
      where vertical = ${vertical} and active = true
   `;
 
   const rssSources: Array<RssSource & { name: string; domain: string | null }> = [];
   const redditSources: Array<RedditSource & { name: string }> = [];
+  // Reddit sources that only contribute their video posts (game-specific subs
+  // and clip aggregators). Non-video posts from these are dropped at ingest
+  // so they don't compete with outlet RSS articles in the news ranking.
+  const videoOnlySourceIds = new Set<number>();
   for (const s of sources) {
+    if (s.video_only) videoOnlySourceIds.add(s.id);
     if (s.kind === "rss" && s.feed_url) {
       rssSources.push({ id: s.id, feedUrl: s.feed_url, name: s.name, domain: s.domain });
     } else if (s.kind === "reddit" && s.sub_name) {
@@ -139,6 +145,12 @@ export async function ingestVertical(
   // --- 2. Walk Reddit posts ---
   const redditPosts = redditResults.flatMap((r) => r.posts);
   for (const p of redditPosts) {
+    // Video-only sources: only their video posts pass through. Everything
+    // else (text, image, screenshot, discussion thread) is dropped.
+    if (videoOnlySourceIds.has(p.sourceId) && !p.isVideo) {
+      continue;
+    }
+
     // Priority 1: video clip (overrides outlet match — videos belong in the
     // clips section regardless of where they were linked from)
     if (p.isVideo) {
