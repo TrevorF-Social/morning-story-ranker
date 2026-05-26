@@ -35,7 +35,13 @@ export type RedditPost = {
 
   // Video classification (populated when the post is detected as a clip)
   isVideo: boolean;
-  videoUrl: string | null;        // canonical URL for the video (youtube watch URL, v.redd.it URL, etc.)
+  // What we link to from the dashboard card. For Reddit-hosted videos this
+  // is the comments permalink because Reddit's player handles the audio mux
+  // — `media.reddit_video.fallback_url` is the silent DASH stream.
+  videoUrl: string | null;
+  // Stable dedup key. For Reddit-hosted videos this is the v.redd.it/{id}
+  // base URL — same across crossposts. For external hosts it equals videoUrl.
+  videoCanonical: string | null;
   videoHost: string | null;       // "youtube" | "twitch" | "streamable" | "v.redd.it" | "other"
   thumbnailUrl: string | null;
 };
@@ -155,22 +161,33 @@ function isInternalRedditHost(host: string): boolean {
 function classifyVideo(
   p: RawPost,
   outboundCanonical: string | null,
-): { isVideo: boolean; videoUrl: string | null; videoHost: string | null; thumbnailUrl: string | null } {
+): {
+  isVideo: boolean;
+  videoUrl: string | null;       // play target (what the user clicks)
+  videoCanonical: string | null; // dedup key (same across crossposts)
+  videoHost: string | null;
+  thumbnailUrl: string | null;
+} {
   const previewThumb = pickPreviewThumb(p);
 
-  // 1. Reddit-hosted native video
+  // 1. Reddit-hosted native video. fallback_url plays without sound
+  // (DASH video-only stream — audio is a separate stream that only Reddit's
+  // own player muxes). Link to the comments permalink so the user gets the
+  // Reddit player and hears audio. Dedup via the v.redd.it base URL — same
+  // across crossposts to multiple subs.
   if (p.is_video || p.post_hint === "hosted:video") {
-    const fallback =
-      p.media?.reddit_video?.fallback_url ?? p.secure_media?.reddit_video?.fallback_url ?? null;
+    const permalinkUrl = `https://www.reddit.com${p.permalink ?? ""}`;
+    const rawVRedditUrl = p.url ?? p.media?.reddit_video?.fallback_url ?? null;
     return {
       isVideo: true,
-      videoUrl: fallback ?? `https://www.reddit.com${p.permalink ?? ""}`,
+      videoUrl: permalinkUrl,
+      videoCanonical: canonicalizeUrl(rawVRedditUrl) ?? canonicalizeUrl(permalinkUrl),
       videoHost: "v.redd.it",
       thumbnailUrl: previewThumb,
     };
   }
 
-  // 2/3. External video host
+  // 2. External video host
   if (outboundCanonical) {
     let host: string | null = null;
     try {
@@ -184,25 +201,27 @@ function classifyVideo(
       return {
         isVideo: true,
         videoUrl: outboundCanonical,
+        videoCanonical: outboundCanonical,
         videoHost: VIDEO_HOSTS.get(host) ?? "other",
         thumbnailUrl: oembedThumb ?? previewThumb,
       };
     }
   }
 
-  // 2b. post_hint says rich:video but we couldn't find a host — still flag it
+  // 3. post_hint says rich:video but we couldn't find a host — still flag it
   if (p.post_hint === "rich:video" && outboundCanonical) {
     const oembedThumb =
       p.media?.oembed?.thumbnail_url ?? p.secure_media?.oembed?.thumbnail_url ?? null;
     return {
       isVideo: true,
       videoUrl: outboundCanonical,
+      videoCanonical: outboundCanonical,
       videoHost: "other",
       thumbnailUrl: oembedThumb ?? previewThumb,
     };
   }
 
-  return { isVideo: false, videoUrl: null, videoHost: null, thumbnailUrl: null };
+  return { isVideo: false, videoUrl: null, videoCanonical: null, videoHost: null, thumbnailUrl: null };
 }
 
 function pickPreviewThumb(p: RawPost): string | null {
@@ -276,6 +295,7 @@ export async function fetchRedditPosts(
       isSelf: p.is_self === true || outboundUrl === null,
       isVideo: video.isVideo,
       videoUrl: video.videoUrl,
+      videoCanonical: video.videoCanonical,
       videoHost: video.videoHost,
       thumbnailUrl: video.thumbnailUrl,
     });

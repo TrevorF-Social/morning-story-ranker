@@ -154,7 +154,11 @@ export async function ingestVertical(
     // Priority 1: video clip (overrides outlet match — videos belong in the
     // clips section regardless of where they were linked from)
     if (p.isVideo) {
-      const canonical = p.videoUrl ?? canonicalizeUrl(p.permalink);
+      // videoCanonical is the stable dedup key (v.redd.it/{id} for native
+      // Reddit, or the canonical YouTube/Twitch URL for external hosts).
+      // videoUrl is the play target (permalink for native Reddit so the
+      // user gets sound; canonical URL for external hosts).
+      const canonical = p.videoCanonical ?? canonicalizeUrl(p.permalink);
       if (!canonical) continue;
       let storyId = storyIdByCanonical.get(canonical);
       if (storyId == null) {
