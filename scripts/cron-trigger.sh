@@ -26,7 +26,8 @@ case "$CRON_TARGET_URL" in
 esac
 
 echo "→ POST $CRON_TARGET_URL/api/cron/rank?vertical=$VERTICAL"
-curl -fsSL --max-time 90 \
+# 150s = 120s route maxDuration + 30s buffer for connect/response.
+curl -fsSL --max-time 150 \
   -X POST "$CRON_TARGET_URL/api/cron/rank?vertical=$VERTICAL" \
   -H "Authorization: Bearer $CRON_TOKEN"
 echo

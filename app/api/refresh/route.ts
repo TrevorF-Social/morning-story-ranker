@@ -17,7 +17,9 @@ import { latestRun, runIngestAndRank } from "@/app/lib/runs";
 const COOLDOWN_MS = 60_000;
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Reddit fetcher is now sequential with 2.5s spacing across ~20 subs → up
+// to ~50s just for Reddit. Buffer to 120s so retries on 429 don't time out.
+export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   if (!verifySession(req.cookies.get(SESSION_COOKIE_NAME)?.value)) {

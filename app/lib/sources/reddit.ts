@@ -89,8 +89,14 @@ type RawPost = {
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+// Reddit's API guidelines say UAs must include a real contact identifier.
+// The previous fake `admin@morningstoryranker.local` was probably one reason
+// our requests were getting throttled aggressively.
 const USER_AGENT =
-  "MorningStoryRanker/0.1 (+internal newsroom tool; contact: admin@morningstoryranker.local)";
+  "MorningStoryRanker/0.2 (+https://github.com/TrevorF-Social/morning-story-ranker)";
+const FETCH_TIMEOUT_MS = 15_000;
+// Backoff schedule for 429 retries (ms). Two retries then give up.
+const RETRY_DELAYS_MS = [3_000, 9_000];
 
 // Hosts whose links we treat as video clips. Lower-cased, host-only.
 const VIDEO_HOSTS = new Map<string, string>([
@@ -114,28 +120,51 @@ declare global {
 }
 const cache: Map<string, CacheEntry> = global.__redditCache ?? (global.__redditCache = new Map());
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchSubRaw(subName: string, opts: { force?: boolean } = {}): Promise<RawPost[]> {
-  const now = Date.now();
   const cached = cache.get(subName);
-  if (!opts.force && cached && now - cached.fetchedAt < CACHE_TTL_MS) {
+  if (!opts.force && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     return cached.posts;
   }
 
   const url = `https://www.reddit.com/r/${encodeURIComponent(subName)}/top.json?t=day&limit=50`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!res.ok) {
-    throw new Error(`reddit ${subName} HTTP ${res.status}`);
-  }
-  const body = (await res.json()) as RawListing;
-  const posts = (body.data?.children ?? [])
-    .filter((c) => c.kind === "t3" && c.data)
-    .map((c) => c.data as RawPost);
+  const headers = { "User-Agent": USER_AGENT, Accept: "application/json" };
 
-  cache.set(subName, { fetchedAt: now, posts });
-  return posts;
+  // Up to 3 attempts: initial + 2 backoffs. Retries only on 429.
+  // Non-429 errors (5xx, network) fail fast and the caller handles fallback.
+  let lastStatus = 0;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      await sleep(RETRY_DELAYS_MS[attempt - 1]);
+    }
+    const res = await fetch(url, {
+      headers,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (res.ok) {
+      const body = (await res.json()) as RawListing;
+      const posts = (body.data?.children ?? [])
+        .filter((c) => c.kind === "t3" && c.data)
+        .map((c) => c.data as RawPost);
+      cache.set(subName, { fetchedAt: Date.now(), posts });
+      return posts;
+    }
+    lastStatus = res.status;
+    // Drain body so the connection can be released
+    try {
+      await res.text();
+    } catch {
+      /* noop */
+    }
+    if (res.status !== 429) {
+      throw new Error(`reddit ${subName} HTTP ${res.status}`);
+    }
+    // 429 → loop continues if more attempts remain
+  }
+  throw new Error(`reddit ${subName} HTTP ${lastStatus} (after retries)`);
 }
 
 function isInternalRedditHost(host: string): boolean {

@@ -16,7 +16,9 @@ import { runIngestAndRank } from "@/app/lib/runs";
  */
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Reddit fetcher is sequential with 2.5s spacing → up to ~50s just for
+// Reddit. Buffer to 120s so retries on 429 don't time out.
+export const maxDuration = 120;
 
 function tokenOk(req: NextRequest): boolean {
   const expected = process.env.CRON_TOKEN;

@@ -88,17 +88,36 @@ export async function ingestVertical(
     if (r.domain) outletHostToSourceId.set(r.domain.toLowerCase(), r.id);
   }
 
-  // Fan out fetches.
+  // RSS is parallel — different outlet hosts, no shared rate limit.
   const rssResults = await Promise.all(
     rssSources.map((s) =>
       fetchRssCandidates({ id: s.id, feedUrl: s.feedUrl }, { force: opts.force, now: fetchedAt }),
     ),
   );
-  const redditResults = await Promise.all(
-    redditSources.map((s) =>
-      fetchRedditPosts({ id: s.id, subName: s.subName }, { force: opts.force, now: fetchedAt }),
-    ),
-  );
+
+  // Reddit is sequential with ~2.5s spacing. Reddit aggressively rate-limits
+  // unauthenticated requests, especially bursts from cloud IPs (Render's
+  // shared pool). Sequential + spaced keeps us under ~25 req/min, which the
+  // public endpoint tolerates. If 3 consecutive subs return 429 even after
+  // the per-fetcher retry/backoff, circuit-break the remaining fetches —
+  // they'd all fail anyway and we'd burn time we don't have.
+  const redditResults: Awaited<ReturnType<typeof fetchRedditPosts>>[] = [];
+  let consecutive429s = 0;
+  for (let i = 0; i < redditSources.length; i++) {
+    const s = redditSources[i];
+    if (consecutive429s >= 3) {
+      redditResults.push({ posts: [], error: "reddit rate-limited (circuit breaker tripped)" });
+      continue;
+    }
+    if (i > 0) await new Promise((r) => setTimeout(r, 2500));
+    const result = await fetchRedditPosts(
+      { id: s.id, subName: s.subName },
+      { force: opts.force, now: fetchedAt },
+    );
+    redditResults.push(result);
+    if (result.error?.includes("HTTP 429")) consecutive429s++;
+    else consecutive429s = 0;
+  }
 
   const report: IngestReport = {
     vertical,
